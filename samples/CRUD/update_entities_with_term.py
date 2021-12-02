@@ -37,7 +37,7 @@ if __name__ == "__main__":
         authentication=oauth
     )
 
-    glossary = client.get_glossary()
+    glossary = client.glossary.get_glossary()
     try:
         terms = glossary["terms"]
     except KeyError:
@@ -104,7 +104,7 @@ if __name__ == "__main__":
         relationship = {
             "typeName": "AtlasGlossarySemanticAssignment",
             "attributes": {},
-            "guid": -100,
+            "guid": "-100",
             "end1": {
                 "guid": so.TermId,
                 "typeName": "AtlasGlossaryTerm"

@@ -1,15 +1,26 @@
+from .util import AtlasException, AtlasBaseClient, batch_dependent_entities, PurviewLimitation, PurviewOnly
+from .glossary import _CrossPlatformTerm, GlossaryClient, PurviewGlossaryClient
+from .typedef import BaseTypeDef
+from .msgraph import MsGraphClient
+from .entity import AtlasClassification, AtlasEntity
+from ..auth.base import AtlasAuthBase
 import json
 from json.decoder import JSONDecodeError
 import logging
 import re
 import requests
 import warnings
+import sys
+_AZ_IDENTITY_INSTALLED = False
+try:
+    import azure.identity
+    _AZ_IDENTITY_INSTALLED = True
+    from ..auth.azcredential import AzCredentialWrapper
+except ImportError:
+    pass
 
-from .entity import AtlasClassification, AtlasEntity
-from .typedef import BaseTypeDef
-from .util import AtlasException, batch_dependent_entities, PurviewLimitation, PurviewOnly
 
-class AtlasClient():
+class AtlasClient(AtlasBaseClient):
     """
     Provides communication between your application and the Apache Atlas
     server with your entities and type definitions.
@@ -27,6 +38,7 @@ class AtlasClient():
         super().__init__()
         self.authentication = authentication
         self.endpoint_url = endpoint_url
+        self.glossary = GlossaryClient(endpoint_url, authentication)
         self.is_purview = False
         self._purview_url_pattern = r"https:\/\/[a-z0-9-]*?\.(catalog\.purview.azure.com)"
         if re.match(self._purview_url_pattern, self.endpoint_url):
@@ -82,6 +94,35 @@ class AtlasClient():
 
         return results
 
+    def delete_relationship(self, guid):
+        """
+        Delete a relationship based on the guid. This lets you remove
+        a connection between entities like removing a column from a
+        table or a term from an entity.
+
+        :param str guid:
+            The relationship guid for the relationship that you want to remove.
+        :return:
+            A dictionary indicating success. Failure will raise an AtlasException.
+        :rtype: dict
+        """
+        results = None
+
+        atlas_endpoint = self.endpoint_url + \
+            f"/relationship/guid/{guid}"
+        deleteType = requests.delete(
+            atlas_endpoint,
+            headers=self.authentication.get_authentication_headers())
+
+        try:
+            deleteType.raise_for_status()
+        except requests.RequestException:
+            raise Exception(deleteType.text)
+
+        results = {
+            "message": f"Successfully deleted relationship with guid {guid}"}
+        return results
+
     def delete_type(self, name):
         """
         Delete a type based on the given name.
@@ -107,7 +148,66 @@ class AtlasClient():
         results = {"message": f"successfully delete {name}"}
         return results
 
-    def get_entity(self, guid=None, qualifiedName=None, typeName=None):
+    def delete_typedefs(self, **kwargs):
+        """
+        Delete one or many types. You can provide a parameters as listed in the
+        kwargs. You'll pass in a type definition that you want to delete.
+
+        That type def can be retrieved with `AtlasClient.get_typedef` or by
+        creating the typedef with, for example `EntityTypeDef("someType")` as
+        imported from :class:`~pyapacheatlas.core.typedef.EntityTypeDef`. You
+        do not need to include any attribute defs, even if they're required.
+
+        Kwargs:
+            :param entityDefs: EntityDefs to delete.
+            :type entityDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+            :param businessMetadataDefs: BusinessMetadataDefs to delete.
+            :type businessMetadataDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+            :param classificationDefs: classificationDefs to delete.
+            :type classificationDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+            :param enumDefs: enumDefs to delete.
+            :type enumDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+            :param relationshipDefs: relationshipDefs to delete.
+            :type relationshipDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+            :param structDefs: structDefs to delete.
+            :type structDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
+
+        :return:
+            A dictionary indicating success. Failure will raise an AtlasException.
+        :rtype: dict
+        """
+        results = None
+        payload = {}
+        allowed_defs = [
+            "businessMetadataDefs", "classificationDefs", "entityDefs",
+            "enumDefs", "relationshipDefs", "structDefs"]
+        if len(set(kwargs.keys()).intersection(allowed_defs)) == 0:
+            raise TypeError(
+                f"You must include one of these keyword arguments: {allowed_defs}")
+
+        for defType in allowed_defs:
+            if defType in kwargs:
+                # Should be a list
+                json_list = [t.to_json() if isinstance(
+                    t, BaseTypeDef) else t for t in kwargs[defType]]
+                payload[defType] = json_list
+
+        atlas_endpoint = self.endpoint_url + \
+            "/types/typedefs"
+        deleteType = requests.delete(
+            atlas_endpoint,
+            json=payload,
+            headers=self.authentication.get_authentication_headers())
+
+        try:
+            deleteType.raise_for_status()
+        except requests.RequestException:
+            raise Exception(deleteType.text)
+
+        results = {"message": f"Successfully deleted type(s)"}
+        return results
+
+    def get_entity(self, guid=None, qualifiedName=None, typeName=None, ignoreRelationships=False, minExtInfo=False):
         """
         Retrieve one or many guids from your Atlas backed Data Catalog.
 
@@ -130,6 +230,10 @@ class AtlasClient():
         :param str typeName:
             The type name of the entity you want to find. Must provide
             qualifiedName if using typeName. Ignored if using guid parameter.
+        :param bool ignoreRelationships:
+            Exclude the relationship information from the response.
+        :param bool minExtInfo:
+            Exclude the extra information from the response.
         :return:
             An AtlasEntitiesWithExtInfo object which includes a list of
             entities and accessible with the "entities" key.
@@ -161,6 +265,45 @@ class AtlasClient():
             atlas_endpoint = self.endpoint_url + \
                 "/entity/bulk?guid={}".format(guid_str)
 
+        # Support the adding or removing of relationships and extra info
+        parameters.update(
+            {"ignoreRelationships": ignoreRelationships, "minExtInfo": minExtInfo})
+        getEntity = requests.get(
+            atlas_endpoint,
+            params=parameters,
+            headers=self.authentication.get_authentication_headers()
+        )
+
+        results = self._handle_response(getEntity)
+
+        return results
+
+    def get_single_entity(self, guid=None, ignoreRelationships=False, minExtInfo=False):
+        """
+        Retrieve one entity based on guid from your Atlas backed Data Catalog.
+
+        Returns a dictionary with keys "referredEntities" and "entity". You'll
+        want to grab the entity value which is a single dictionary.
+
+        :param str guid: The guid you want to retrieve.
+        :param bool ignoreRelationships:
+            Exclude the relationship information from the response.
+        :param bool minExtInfo:
+            Exclude the extra information from the response.
+        :return:
+            An AtlasEntityWithExtInfo object which includes "referredEntities"
+            and "entity" keys.
+        :rtype: dict(str, Union(list(dict),dict))
+        """
+        results = None
+        parameters = {}
+
+        atlas_endpoint = self.endpoint_url + \
+            "/entity/guid/{}".format(guid)
+
+        # Support the adding or removing of relationships and extra info
+        parameters.update(
+            {"ignoreRelationships": ignoreRelationships, "minExtInfo": minExtInfo})
         getEntity = requests.get(
             atlas_endpoint,
             params=parameters,
@@ -216,7 +359,11 @@ class AtlasClient():
             # You have to get the entire existing entity and update its attributes
             get_response = self.get_entity(
                 qualifiedName=qualifiedName, typeName=typeName)
-            entity = get_response["entities"][0]
+            try:
+                entity = get_response["entities"][0]
+            except KeyError:
+                raise ValueError(
+                    f"The entity with qualifiedName {qualifiedName} and type {typeName} does not exist and cannot be updated.")
             entity["attributes"].update(attributes)
             # Construct it as an AtlasEntityWithInfo
             entityInfo = {"entity": entity,
@@ -284,8 +431,7 @@ class AtlasClient():
         Retrieve one or many entity headers from your Atlas backed Data Catalog.
 
         :param guid:
-            The guid or guids you want to retrieve. Not used if using typeName
-            and qualifiedName.
+            The guid or guids you want to retrieve.
         :type guid: Union(str, list(str))
         :return:
             An AtlasEntityHeader dict which includes the keys: guid, attributes
@@ -376,8 +522,10 @@ class AtlasClient():
 
         # If we are using type category
         if type_category:
+            # business_Metadata has an underscore so before it can be used in
+            # the endpoint, it must be converted to businessMetadata.
             atlas_endpoint = atlas_endpoint + \
-                "{}def".format(type_category.value)
+                "{}def".format(type_category.value.replace("_", ""))
         elif guid or name:
             atlas_endpoint = atlas_endpoint + "typedef"
         else:
@@ -402,6 +550,9 @@ class AtlasClient():
 
     def get_glossary(self, name="Glossary", guid=None, detailed=False):
         """
+        AtlasClient.get_glossary is being deprecated.
+        Please use AtlasClient.glossary.get_glossary instead.
+
         Retrieve the specified glossary by name or guid along with the term
         headers (AtlasRelatedTermHeader: including displayText and termGuid).
         Providing the glossary name only will result in a lookup of all
@@ -425,67 +576,17 @@ class AtlasClient():
 
         :rtype: list(dict)
         """
-        results = None
-
-        if guid:
-            logging.debug(f"Retreiving a Glossary based on guid: {guid}")
-            atlas_endpoint = self.endpoint_url + "/glossary/{}".format(guid)
-            if detailed:
-                atlas_endpoint = atlas_endpoint + "/detailed"
-            getResult = requests.get(
-                atlas_endpoint,
-                headers=self.authentication.get_authentication_headers()
-            )
-            results = self._handle_response(getResult)
-        else:
-            logging.debug(f"Retreiving a Glossary based on name: {name}")
-            all_glossaries = self._get_glossaries()
-            logging.debug(f"Iterating over {len(all_glossaries)} glossaries")
-            for glossary in all_glossaries:
-                if glossary["name"] == name:
-                    logging.debug(f"Found a glossary named '{name}'")
-                    if detailed:
-                        logging.debug(
-                            f"Recursively calling get_glossary with guid: {glossary['guid']}")
-                        results = self.get_glossary(
-                            guid=glossary["guid"], detailed=detailed)
-                    else:
-                        results = glossary
-            if results is None:
-                raise ValueError(
-                    f"Glossary with a name of {name} was not found.")
-
-        return results
-
-    def _get_glossaries(self, limit=-1, offset=0, sort_order="ASC"):
-        """
-        Retrieve all glossaries and the term headers.
-
-        :param int limit:
-            The maximum number of glossaries to pull back.  Does not affect the
-            number of term headers included in the results.
-        :param int offset: The number of glossaries to skip.
-        :param str sort_order: ASC for DESC sort for glossary name.
-        :return: The requested glossaries with the term headers.
-        :rtype: list(dict)
-        """
-        results = None
-        atlas_endpoint = self.endpoint_url + "/glossary"
-        logging.debug("Retreiving all glossaries from catalog")
-
-        # TODO: Implement paging with offset and limit
-        getResult = requests.get(
-            atlas_endpoint,
-            params={"limit": limit, "offset": offset, "sort": sort_order},
-            headers=self.authentication.get_authentication_headers()
-        )
-
-        results = self._handle_response(getResult)
-
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.get_glossary is being deprecated. Please use AtlasClient.glossary.get_glossary instead.")
+        results = self.glossary.get_glossary(name, guid, detailed)
         return results
 
     def get_glossary_term(self, guid=None, name=None, glossary_name="Glossary", glossary_guid=None):
         """
+        AtlasClient.get_glossary_term is being deprecated.
+        Please use AtlasClient.glossary.get_term instead.
+
         Retrieve a single glossary term based on its guid. Providing only the
         glossary_name will result in a lookup for the glossary guid. If you
         plan on looking up many terms, consider using the get_glossary method
@@ -506,32 +607,18 @@ class AtlasClient():
         :return: The requested glossary term as a dict.
         :rtype: dict
         """
-        results = None
-
-        if guid is None and name is None:
-            raise ValueError("Either guid or name and glossary must be set.")
-
-        if guid:
-            atlas_endpoint = self.endpoint_url + \
-                "/glossary/term/{}".format(guid)
-
-            getTerms = requests.get(
-                atlas_endpoint,
-                headers=self.authentication.get_authentication_headers()
-            )
-            results = self._handle_response(getTerms)
-        else:
-            terms_in_glossary = self.get_glossary(
-                name=glossary_name, guid=glossary_guid)
-            for term in terms_in_glossary["terms"]:
-                if term["displayText"] == name:
-                    _guid = term["termGuid"]
-                    results = self.get_glossary_term(guid=_guid)
-
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.get_glossary_term is being deprecated. Please use AtlasClient.glossary.get_term instead.")
+        results = self.glossary.get_term(
+            guid, name, glossary_name, glossary_guid)
         return results
 
     def assignTerm(self, entities, termGuid=None, termName=None, glossary_name="Glossary"):
         """
+        AtlasClient.assignTerm is being deprecated.
+        Please use AtlasClient.glossary.assignTerm instead.
+
         Assign a single term to many entities. Provide either a term guid
         (if you know it) or provide the term name and glossary name. If
         term name is provided, term guid is ignored.
@@ -552,50 +639,18 @@ class AtlasClient():
         :return: A dictionary indicating success or failure.
         :rtype: dict
         """
-        results = None
-
-        # Massage the data into dicts
-        # Assumes the AtlasEntity does not have guid defined
-        json_entities = []
-        for e in entities:
-            if isinstance(e, AtlasEntity) and e.guid != None:
-                json_entities.append({"guid": e.guid})
-            elif isinstance(e, dict) and "guid" in e:
-                json_entities.append({"guid": e["guid"]})
-            else:
-                warnings.warn(
-                    f"{str(e)} does not contain a guid and will be skipped.",
-                    category=UserWarning, stacklevel=2)
-
-        if len(json_entities) == 0:
-            raise RuntimeError(
-                "No Atlas Entities or Dictionaries with Guid were provided.")
-
-        # Term Name will supercede term guid.
-        if termName:
-            _discoveredTerm = self.get_glossary_term(
-                name=termName, glossary_name=glossary_name)
-            termGuid = _discoveredTerm["guid"]
-
-        atlas_endpoint = self.endpoint_url + \
-            f"/glossary/terms/{termGuid}/assignedEntities"
-
-        postAssignment = requests.post(
-            atlas_endpoint,
-            headers=self.authentication.get_authentication_headers(),
-            json=json_entities
-        )
-
-        try:
-            postAssignment.raise_for_status()
-        except requests.RequestException:
-            raise Exception(postAssignment.text)
-
-        results = {"message": f"Successfully assigned term to entities."}
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.assignTerm is being deprecated. Please use AtlasClient.glossary.assignTerm instead.")
+        results = self.glossary.assignTerm(
+            entities, termGuid, termName, glossary_name)
         return results
 
     def delete_assignedTerm(self, entities, termGuid=None, termName=None, glossary_name="Glossary"):
         """
+        AtlasClient.delete_assignedTerm is being deprecated.
+        Please use AtlasClient.glossary.delete_assignedTerm instead.
+
         Remove a single term from many entities. Provide either a term guid
         (if you know it) or provide the term name and glossary name. If
         term name is provided, term guid is ignored.
@@ -620,70 +675,18 @@ class AtlasClient():
         :return: A dictionary indicating success or failure.
         :rtype: dict
         """
-        results = None
-
-        # Need the term guid to build the payload
-        if termName:
-            _discoveredTerm = self.get_glossary_term(
-                name=termName, glossary_name=glossary_name)
-            termGuid = _discoveredTerm["guid"]
-
-        # Massage the data into dicts
-        # Assumes the AtlasEntity does not have guid defined
-        json_entities = []
-        for e in entities:
-            # Support AtlasEntity
-            if isinstance(e, AtlasEntity) and e.guid != None:
-                if "meanings" in e.relationshipAttributes:
-                    _temp_payload = [
-                        {"guid": e.guid,
-                            "relationshipGuid": ra["relationshipGuid"]}
-                        for ra in e.relationshipAttributes.get("meanings", [])
-                        if ra.get("guid", "") == termGuid
-                    ]
-                    json_entities.extend(_temp_payload)
-            # Support response from Atlas parsing
-            elif isinstance(e, dict) and "guid" in e and "relationshipAttributes" in e:
-                _temp_payload = [
-                    {"guid": e["guid"],
-                        "relationshipGuid": ra["relationshipGuid"]}
-                    for ra in e["relationshipAttributes"].get("meanings", [])
-                    if ra.get("guid", "") == termGuid
-                ]
-                json_entities.extend(_temp_payload)
-            # Support arbitrary dictionary
-            elif isinstance(e, dict) and "guid" in e and "relationshipGuid" in e:
-                json_entities.append(
-                    {"guid": e["guid"], "relationshipGuid": e["relationshipGuid"]})
-            else:
-                warnings.warn(
-                    f"{str(e)} does not contain a guid and will be skipped.",
-                    category=UserWarning, stacklevel=2)
-
-        if len(json_entities) == 0:
-            raise RuntimeError(
-                "No Atlas Entities or Dictionaries with Guid were provided.")
-
-        atlas_endpoint = self.endpoint_url + \
-            f"/glossary/terms/{termGuid}/assignedEntities"
-
-        deleteAssignment = requests.delete(
-            atlas_endpoint,
-            headers=self.authentication.get_authentication_headers(),
-            json=json_entities
-        )
-
-        try:
-            deleteAssignment.raise_for_status()
-        except requests.RequestException:
-            raise Exception(deleteAssignment.text)
-
-        results = {
-            "message": f"Successfully deleted assigned term from entities."}
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.delete_assignedTerm is being deprecated. Please use AtlasClient.glossary.delete_assignedTerm instead.")
+        results = self.glossary.delete_assignedTerm(
+            entities, termGuid, termName, glossary_name)
         return results
 
     def get_termAssignedEntities(self, termGuid=None, termName=None, glossary_name="Glossary", limit=-1, offset=0, sort="ASC"):
         """
+        AtlasClient.get_termAssignedEntities is being deprecated.
+        Please use AtlasClient.glossary.get_termAssignedEntities instead.
+
         Page through the assigned entities for the given term.
 
         :param str termGuid: The guid for the term. Ignored if using termName.
@@ -694,24 +697,34 @@ class AtlasClient():
         :return: A list of Atlas relationships between the given term and entities.
         :rtype: list(dict)
         """
-        results = None
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.get_termAssignedEntities is being deprecated. Please use AtlasClient.glossary.get_termAssignedEntities instead.")
+        results = self.glossary.get_termAssignedEntities(
+            termGuid, termName, glossary_name, limit, offset, sort)
+        return results
 
-        if termName:
-            _discoveredTerm = self.get_glossary_term(
-                name=termName, glossary_name=glossary_name)
-            termGuid = _discoveredTerm["guid"]
+    def upload_terms(self, batch, force_update=False):
+        """
+        AtlasClient.upload_terms is being deprecated.
+        Please use AtlasClient.glossary.upload_terms instead.
 
-        atlas_endpoint = self.endpoint_url + \
-            f"/glossary/terms/{termGuid}/assignedEntities"
+        Upload terms to your Atlas backed Data Catalog. Supports Purview Term
+        Templates by passing in an attributes field with the term template's
+        name as a field within attributes and an object of the required and
+        optional fields.
 
-        # TODO: Implement paging with a generator
-        getAssignments = requests.get(
-            atlas_endpoint,
-            params={"limit": limit, "offset": offset, "sort": sort},
-            headers=self.authentication.get_authentication_headers()
-        )
-
-        results = self._handle_response(getAssignments)
+        :param batch: A list of AtlasGlossaryTerm objects to be uploaded.
+        :type batch: list(dict)
+        :return:
+            A list of AtlasGlossaryTerm objects that are the results from
+            your upload.
+        :rtype: list(dict)
+        """
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "AtlasClient.upload_terms is being deprecated. Please use AtlasClient.glossary.upload_terms instead.")
+        results = self.glossary.upload_terms(batch, force_update)
         return results
 
     def _get_typedefs_header(self):
@@ -972,7 +985,7 @@ class AtlasClient():
         Massage the type upload. See rules in upload_typedefs.
         """
         payload = {}
-        required_keys = ["classificationDefs", "entityDefs",
+        required_keys = ["businessMetadataDefs", "classificationDefs", "entityDefs",
                          "enumDefs", "relationshipDefs", "structDefs"]
 
         # If typedefs is defined as a dict and it contains at least one of the
@@ -984,16 +997,23 @@ class AtlasClient():
             # Assuming this is a single typedef
             key = None
             if isinstance(typedefs, BaseTypeDef):
-                key = typedefs.category.lower() + "Defs"
+                key = typedefs.category
                 val = [typedefs.to_json()]
             elif isinstance(typedefs, dict):
-                key = typedefs["category"].lower() + "Defs"
+                key = typedefs["category"]
                 val = [typedefs]
             else:
                 raise NotImplementedError(
                     "Uploading an object of type '{}' is not supported."
                     .format(type(typedefs))
                 )
+
+            # business_metadata must be converted to businessMetadataDefs
+            # but it's stored as BUSINESS_METADATA
+            key = key.lower()
+            if key == "business_metadata":
+                key = "businessMetadata"
+            key = key + "Defs"
             payload = {key: val}
         # Did we set any of the xDefs as arguments?
         elif len(set(kwargs.keys()).intersection(required_keys)) > 0:
@@ -1055,9 +1075,8 @@ class AtlasClient():
             :type relationshipDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
             :param structDefs: structDefs to upload.
             :type structDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
-
-        Returns:
-
+            :param businessMetadataDefs: businessMetadataDefs to upload.
+            :type businessMetadataDefs: list( Union(:class:`~pyapacheatlas.core.typedef.BaseTypeDef`, dict))
         """
         # Should this take a list of type defs and figure out the formatting
         # by itself?
@@ -1172,10 +1191,12 @@ class AtlasClient():
         atlas_endpoint = self.endpoint_url + "/entity/bulk"
 
         payload = AtlasClient._prepare_entity_upload(batch)
-        
+
         results = []
         if batch_size and len(payload["entities"]) > batch_size:
-            batches = [{"entities":x} for x in batch_dependent_entities(payload["entities"], batch_size=batch_size)]
+            batches = [{"entities": x} for x in batch_dependent_entities(
+                payload["entities"], batch_size=batch_size)]
+
             for batch_id, batch in enumerate(batches):
                 batch_size = len(batch["entities"])
                 logging.debug(f"Batch upload #{batch_id} of size {batch_size}")
@@ -1186,7 +1207,7 @@ class AtlasClient():
                 )
                 temp_results = self._handle_response(postBulkEntities)
                 results.append(temp_results)
-        
+
         else:
             postBulkEntities = requests.post(
                 atlas_endpoint,
@@ -1230,34 +1251,6 @@ class AtlasClient():
         )
 
         results = self._handle_response(relationshipResp)
-
-        return results
-
-    def upload_terms(self, batch, force_update=False):
-        """
-        Upload terms to your Atlas backed Data Catalog. Supports Purview Term
-        Templates by passing in an attributes field with the term template's
-        name as a field within attributes and an object of the required and
-        optional fields.
-
-        :param batch: A list of AtlasGlossaryTerm objects to be uploaded.
-        :type batch: list(dict)
-        :return:
-            A list of AtlasGlossaryTerm objects that are the results from
-            your upload.
-        :rtype: list(dict)
-        """
-        # TODO Include a Do Not Overwrite call
-        results = None
-        atlas_endpoint = self.endpoint_url + "/glossary/terms"
-
-        postResp = requests.post(
-            atlas_endpoint,
-            json=batch,
-            headers=self.authentication.get_authentication_headers()
-        )
-
-        results = self._handle_response(postResp)
 
         return results
 
@@ -1364,6 +1357,129 @@ class AtlasClient():
         results = self._handle_response(getLineageRequest)
         return results
 
+    @PurviewLimitation
+    def delete_entity_labels(self, labels, guid=None, typeName=None, qualifiedName=None):
+        """
+        Delete the given labels for one entity. Provide a list of strings that
+        should be removed. You can either provide the guid of the entity or
+        the typeName and qualifiedName of the entity.
+
+        If you want to clear out an entity without knowing all the labels, you
+        should consider `update_entity_labels` instead and set
+        force_update to True.
+
+        :param list(str) labels: The label(s) that should be removed.
+        :param str guid:
+            The guid of the entity to be updated. Optional if using typeName
+            and qualifiedName.
+        :param str typeName:
+            The type name of the entity to be updated. Must also use
+            qualifiedname with typeName. Not used if guid is provided.
+        :param str qualifiedName:
+            The qualified name of the entity to be updated. Must also use
+            typeName with qualifiedName. Not used if guid is provided.
+        :return:
+            A dict containing a message indicating success. Otherwise
+            it will raise an AtlasException.
+        :rtype: dict(str, str)
+        """
+
+        parameters = {}
+        if guid:
+            atlas_endpoint = self.endpoint_url + \
+                f"/entity/guid/{guid}/labels"
+        elif qualifiedName and typeName:
+            atlas_endpoint = self.endpoint_url + \
+                f"/entity/uniqueAttribute/type/{typeName}/labels"
+            parameters.update({"attr:qualifiedName": qualifiedName})
+        else:
+            raise ValueError(
+                "Either guid or typeName and qualifiedName must be defined.")
+
+        deleteResp = requests.delete(
+            atlas_endpoint,
+            params=parameters,
+            json=labels,
+            headers=self.authentication.get_authentication_headers())
+
+        # Can't use _handle_response since it expects json returned
+        try:
+            deleteResp.raise_for_status()
+        except requests.RequestException as e:
+            if "errorCode" in deleteResp:
+                raise AtlasException(deleteResp.text)
+            else:
+                raise requests.RequestException(deleteResp.text)
+
+        action = f"guid: {guid}" if guid else f"type:{typeName} qualifiedName:{qualifiedName}"
+        results = {"message": f"Successfully deleted labels for {action}"}
+        return results
+
+    @PurviewLimitation
+    def update_entity_labels(self, labels, guid=None, typeName=None, qualifiedName=None, force_update=False):
+        """
+        Update the given labels for one entity. Provide a list of strings that
+        should be added. You can either provide the guid of the entity or
+        the typeName and qualifiedName of the entity. By using force_update
+        set to True you will overwrite the existing entity. force_update
+        set to False will append to the existing entity.
+
+        :param list(str) labels: The label(s) that should be appended or set.
+        :param str guid:
+            The guid of the entity to be updated. Optional if using typeName
+            and qualifiedName.
+        :param str typeName:
+            The type name of the entity to be updated. Must also use
+            qualifiedname with typeName. Not used if guid is provided.
+        :param str qualifiedName:
+            The qualified name of the entity to be updated. Must also use
+            typeName with qualifiedName. Not used if guid is provided.
+        :return:
+            A dict containing a message indicating success. Otherwise
+            it will raise an AtlasException.
+        :rtype: dict(str, str)
+        """
+
+        parameters = {}
+        if guid:
+            atlas_endpoint = self.endpoint_url + \
+                f"/entity/guid/{guid}/labels"
+        elif qualifiedName and typeName:
+            atlas_endpoint = self.endpoint_url + \
+                f"/entity/uniqueAttribute/type/{typeName}/labels"
+            parameters.update({"attr:qualifiedName": qualifiedName})
+        else:
+            raise ValueError(
+                "Either guid or typeName and qualifiedName must be defined.")
+
+        verb = "added"
+        if force_update:
+            updateResp = requests.post(
+                atlas_endpoint,
+                params=parameters,
+                json=labels,
+                headers=self.authentication.get_authentication_headers())
+            verb = "overwrote"
+        else:
+            updateResp = requests.put(
+                atlas_endpoint,
+                params=parameters,
+                json=labels,
+                headers=self.authentication.get_authentication_headers())
+
+        # Can't use _handle_response since it expects json returned
+        try:
+            updateResp.raise_for_status()
+        except requests.RequestException as e:
+            if "errorCode" in updateResp:
+                raise AtlasException(updateResp.text)
+            else:
+                raise requests.RequestException(updateResp.text)
+
+        action = f"guid: {guid}" if guid else f"type:{typeName} qualifiedName:{qualifiedName}"
+        results = {"message": f"Successfully {verb} labels for {action}"}
+        return results
+
 
 class PurviewClient(AtlasClient):
     """
@@ -1381,7 +1497,17 @@ class PurviewClient(AtlasClient):
 
     def __init__(self, account_name, authentication=None):
         endpoint_url = f"https://{account_name.lower()}.catalog.purview.azure.com/api/atlas/v2"
+        if authentication and not isinstance(authentication, AtlasAuthBase):
+            # Assuming this is Azure Identity related
+            if _AZ_IDENTITY_INSTALLED:
+                authentication = AzCredentialWrapper(authentication)
+            else:
+                raise Exception(
+                    "You probably need to install azure-identity to use this authentication method.")
         super().__init__(endpoint_url, authentication)
+
+        self.glossary = PurviewGlossaryClient(endpoint_url, authentication)
+        self.msgraph = MsGraphClient(authentication)
 
     @PurviewOnly
     def get_entity_next_lineage(self, guid, direction, getDerivedLineage=False, offset=0, limit=-1):
@@ -1439,36 +1565,19 @@ class PurviewClient(AtlasClient):
             `import_terms_status` to get the status of the import operation.
         :rtype: dict
         """
-        results = None
-        if glossary_guid:
-            atlas_endpoint = self.endpoint_url + \
-                f"/glossary/{glossary_guid}/terms/import?&includeTermHierarchy=True"
-        elif glossary_name:
-            atlas_endpoint = self.endpoint_url + \
-                f"/glossary/name/{glossary_name}/terms/import?&includeTermHierarchy=True"
-        else:
-            raise ValueError(
-                "Either glossary_name or glossary_guid must be defined.")
-
-        headers = self.authentication.get_authentication_headers()
-        # Pop the default of application/json so that request can fill in the
-        # multipart/form-data; boundary=xxxx that is automatically generated
-        # when using the files argument.
-        headers.pop("Content-Type")
-
-        postResp = requests.post(
-            atlas_endpoint,
-            files={'file': ("file", open(csv_path, 'rb'))},
-            headers=headers
-        )
-
-        results = self._handle_response(postResp)
-
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "PurviewClient.import_terms is being deprecated. Please use PurviewClient.glossary.import_terms instead.")
+        results = self.glossary.import_terms(
+            csv_path, glossary_name, glossary_guid)
         return results
 
     @PurviewOnly
     def import_terms_status(self, operation_guid):
         """
+        PurviewClient.import_terms_status is being deprecated.
+        Please use PurviewClient.glossary.import_terms_status instead.
+
         Get the operation status of a glossary term import activity. You get
         the operation_guid after executing the `import_terms` method and find
         the `id` field in the response dict/json.
@@ -1480,22 +1589,18 @@ class PurviewClient(AtlasClient):
             number of errors.
         :rtype: dict
         """
-        results = None
-        atlas_endpoint = self.endpoint_url + \
-            f"/glossary/terms/import/{operation_guid}"
-
-        postResp = requests.get(
-            atlas_endpoint,
-            headers=self.authentication.get_authentication_headers()
-        )
-
-        results = self._handle_response(postResp)
-
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "PurviewClient.import_terms_status is being deprecated. Please use PurviewClient.glossary.import_terms_status instead.")
+        results = self.glossary.import_terms_status(operation_guid)
         return results
 
     @PurviewOnly
     def export_terms(self, guids, csv_path, glossary_name="Glossary", glossary_guid=None):
         """
+        PurviewClient.export_terms is being deprecated.
+        Please use PurviewClient.glossary.export_terms instead.
+
         :param list(str) guids: List of guids that should be exported as csv.
         :param str csv_path: Path to CSV that will be imported.
         :param str glossary_name:
@@ -1510,36 +1615,35 @@ class PurviewClient(AtlasClient):
         :return: A csv file is written to the csv_path.
         :rtype: None
         """
-        if glossary_guid:
-            # Glossary guid is defined so we don't need to look up the guid
-            pass
-        elif glossary_name:
-            glossary = self.get_glossary(glossary_name)
-            glossary_guid = glossary["guid"]
-        else:
-            raise ValueError(
-                "Either glossary_name or glossary_guid must be defined.")
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "PurviewClient.export_terms is being deprecated. Please use PurviewClient.glossary.export_terms instead.")
+        results = self.glossary.export_terms(
+            guids, csv_path, glossary_name, glossary_guid)
+        return results
 
-        results = None
-        atlas_endpoint = self.endpoint_url + \
-            f"/glossary/{glossary_guid}/terms/export"
+    def upload_term(self, term, includeTermHierarchy=True, **kwargs):
+        """
+        PurviewClient.upload_term is being deprecated.
+        Please use PurviewClient.glossary.upload_term instead.
 
-        postResp = requests.post(
-            atlas_endpoint,
-            json=guids,
-            headers=self.authentication.get_authentication_headers()
-        )
+        Upload a single term to Azure Purview. Minimally, you can specify
+        the term alone and it will upload it to Purview! However, if you
+        plan on uploading many terms programmatically, you might look at
+        `PurviewClient.upload_terms` or `PurviewClient.import_terms`.
 
-        # Can't use handle response since it expects json
-        try:
-            postResp.raise_for_status()
-        except requests.RequestException as e:
-            if "errorCode" in postResp:
-                raise AtlasException(postResp.text)
-            else:
-                raise requests.RequestException(postResp.text)
+        If you do intend on using this method for multiple terms consider
+        looking up the glossary_guid and any parent term guids in advance
+        otherwise, this method will call get_glossary multiple times making
+        it much slower to do many updates.
 
-        with open(csv_path, 'wb') as fp:
-            fp.write(postResp.content)
-
-        return None
+        ```
+        glossary = client.get_glossary()
+        glossary_guid = glossary["guid"]
+        ```
+        """
+        # TODO: Remove at 1.0.0 release
+        warnings.warn(
+            "PurviewClient.upload_term is being deprecated. Please use PurviewClient.glossary.upload_term instead.")
+        results = self.glossary.upload_term(term, includeTermHierarchy)
+        return results

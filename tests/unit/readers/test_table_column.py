@@ -65,11 +65,11 @@ def test_table_lineage():
     results = reader.parse_table_lineage(json_rows)
 
     assert(results[0].to_json(minimum=True) == {
-           "typeName": "demo_type", "guid": -1001, "qualifiedName": "table1"})
+           "typeName": "demo_type", "guid": "-1001", "qualifiedName": "table1"})
     assert(results[1].to_json(minimum=True) == {
-           "typeName": "demo_type2", "guid": -1002, "qualifiedName": "table0"})
+           "typeName": "demo_type2", "guid": "-1002", "qualifiedName": "table0"})
     assert(results[2].to_json(minimum=True) == {
-           "typeName": "proc_type", "guid": -1003, "qualifiedName": "proc01"})
+           "typeName": "proc_type", "guid": "-1003", "qualifiedName": "proc01"})
 
 
 def test_table_lineage_with_attributes():
@@ -110,7 +110,7 @@ def test_table_lineage_multiple_inputs():
 
     assert(len(results) == 4)
     assert(results[3].to_json(minimum=True) == {
-           "typeName": "proc_type", "guid": -1003, "qualifiedName": "proc01"})
+           "typeName": "proc_type", "guid": "-1003", "qualifiedName": "proc01"})
     process_inputs_qualified_names = [
         p["qualifiedName"] for p in results[3].inputs ]
     process_outputs_qualified_names = [
@@ -130,7 +130,7 @@ def test_column_lineage_entities():
     # Outputs -1003 as the last guid
     tables_and_processes = reader.parse_table_lineage(json_tables)
 
-    results = reader.parse_column_lineage(
+    results = reader.parse_finegrain_column_lineage(
         json_columns, tables_and_processes, atlas_typedefs)
 
     # Two column entities
@@ -171,7 +171,7 @@ def test_column_lineage_entities_with_attributes():
     # Outputs -1003 as the last guid
     tables_and_processes = reader.parse_table_lineage(json_tables)
 
-    results = reader.parse_column_lineage(
+    results = reader.parse_finegrain_column_lineage(
         json_columns, tables_and_processes, atlas_typedefs)
 
     # Two column entities
@@ -197,7 +197,7 @@ def test_column_lineage_entities_with_classifications():
     # Outputs -1003 as the last guid
     tables_and_processes = reader.parse_table_lineage(json_tables)
 
-    results = reader.parse_column_lineage(
+    results = reader.parse_finegrain_column_lineage(
         json_columns, tables_and_processes, atlas_typedefs)
 
     # Two column entities
@@ -236,7 +236,7 @@ def test_column_lineage_entities_with_columnMapping():
     # Outputs -1003 as the last guid
     tables_and_processes = reader.parse_table_lineage(json_tables)
 
-    results = reader.parse_column_lineage(
+    results = reader.parse_finegrain_column_lineage(
         json_columns, tables_and_processes, atlas_typedefs, use_column_mapping=True)
 
     # Demonstrating column lineage
@@ -274,7 +274,7 @@ def test_column_lineage_entities_when_multi_tabled_inputs():
     ]
 
     table_entities = reader.parse_table_lineage(json_tables)
-    column_entities = reader.parse_column_lineage(
+    column_entities = reader.parse_finegrain_column_lineage(
         json_columns, table_entities, atlas_typedefs, use_column_mapping=True)
 
     # Three columns and one process entity

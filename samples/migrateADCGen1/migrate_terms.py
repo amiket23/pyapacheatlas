@@ -1,3 +1,4 @@
+import argparse
 import configparser
 import csv
 import json
@@ -89,8 +90,13 @@ def convert_gen1_to_purview_terms(config):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--download-only", action="store_true", default=False)
+    parser.add_argument("--config", default="./samples/migrateADCGen1/config.ini")
+    args, _ = parser.parse_known_args()
+
     config = configparser.ConfigParser()
-    config.read("./samples/migrateADCGen1/config.ini")
+    config.read(args.config)
 
     # Configure your Purview Authentication
     oauth = ServicePrincipalAuthentication(
@@ -108,6 +114,9 @@ if __name__ == "__main__":
     download_gen1_terms(config)
     print("Successfully downloaded ADC Gen 1 Terms.")
 
+    if args.download_only:
+        exit()
+
     # Convert the json to a csv for import
     print("Converting ADC Gen 1 Terms to be CSV for Purview Upload...")
     convert_gen1_to_purview_terms(config)
@@ -115,14 +124,14 @@ if __name__ == "__main__":
 
     print("Beginning upload of terms to Purview.")
     # Call the import terms method to take the csv and upload it
-    results = client.import_terms(config["Default"]["PurviewImportPath"])
+    results = client.glossary.import_terms(config["Default"]["PurviewImportPath"])
 
     print("Initial Upload Status:")
     print(json.dumps(results, indent=2))
 
     print("Checking Status every Five Seconds until status != 'Running'")
     while(True):
-        ops_status = client.import_terms_status(results["id"])
+        ops_status = client.glossary.import_terms_status(results["id"])
         print(json.dumps(ops_status, indent=2))
         if ops_status["status"] != "RUNNING":
             break

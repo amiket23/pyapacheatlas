@@ -243,7 +243,7 @@ class LineageMixIn():
 
         return _qual_name
 
-    def parse_column_lineage(self, json_rows, atlas_entities, atlas_typedefs, use_column_mapping=False):
+    def parse_finegrain_column_lineage(self, json_rows, atlas_entities, atlas_typedefs, use_column_mapping=False):
         """
         :param json_rows:
             A list of dicts that contain the converted rows of your column
@@ -518,32 +518,36 @@ class LineageMixIn():
                 temp_out = temp_proc.outputs
                 # If we have an input, check if it already exists
                 if inputs and len(inputs) > 0:
-                    input_qn = self._header_qn(inputs[0])    
+                    input_qn = self._header_qn(inputs[0])
                     if input_qn not in [self._header_qn(x) for x in temp_in]:
                         temp_in.extend(inputs)
                         temp_proc.inputs = temp_in
-                        
+
                     else:
-                        warnings.warn(f"Input '{input_qn}' is repeated in Process '{process_qual_name}'. Only the earliest entry is kept.")
+                        warnings.warn(
+                            f"Input '{input_qn}' is repeated in Process '{process_qual_name}'. Only the earliest entry is kept.")
                 elif isinstance(inputs, list):
                     # We have an empty list, as the input, meaning destroy the input
                     if len(temp_in) > 0:
-                        warnings.warn(f"Process '{process_qual_name}' has conflicting inputs and N/A values and will possibly be overwritten.")
+                        warnings.warn(
+                            f"Process '{process_qual_name}' has conflicting inputs and N/A values and will possibly be overwritten.")
                     temp_proc.inputs(inputs)
 
                 if outputs:
-                    output_qn = self._header_qn(outputs[0])    
+                    output_qn = self._header_qn(outputs[0])
                     if output_qn not in [self._header_qn(x) for x in temp_out]:
                         temp_out.extend(outputs)
                         temp_proc.outputs = temp_out
                     else:
-                        warnings.warn(f"Output '{output_qn}' is repeated in Process '{process_qual_name}'. Only the earliest entry is kept.")
+                        warnings.warn(
+                            f"Output '{output_qn}' is repeated in Process '{process_qual_name}'. Only the earliest entry is kept.")
                 elif isinstance(outputs, list):
                     # We have an empty list, as the output, meaning destroy the output
                     if len(temp_out) > 0:
-                        warnings.warn(f"Process '{process_qual_name}' has conflicting outputs and N/A values and will possibly be overwritten.")
+                        warnings.warn(
+                            f"Process '{process_qual_name}' has conflicting outputs and N/A values and will possibly be overwritten.")
                     temp_proc.outputs = outputs
-                
+
             else:
                 proc = AtlasProcess(
                     name=process_name,
@@ -554,6 +558,89 @@ class LineageMixIn():
                     outputs=outputs
                 )
                 processes_seen[process_qual_name] = proc
-            
+
             results = [v.to_json() for v in processes_seen.values()]
+        return results
+
+    def parse_column_mapping(self, json_rows):
+        """
+        Take in ColumnMapping dictionaries and create the mutated Process
+        entities to be uploaded. All referenced entities should already exist
+        and be identified by their type and qualifiedName.
+
+        Creates process entities with only the columnMapping field filled in.
+
+        :param json_rows:
+            A list of dicts that contain the converted rows of your update
+            lineage spreadsheet.
+        :type json_rows: list(dict(str,str))
+        :return: An AtlasTypeDef with entityDefs for the provided rows.
+        :rtype: dict(str, list(dict))
+        """
+        results = []
+        sp = self.config.source_prefix
+        tp = self.config.target_prefix
+        pp = self.config.process_prefix
+
+        processes_seen = dict()
+        # {proc: {in-data|out-data:[{'Source':,'Sink':}]}}
+
+        for row in json_rows:
+            try:
+                target_col = row[f"{tp} column"]
+                target_qual_name = row[f"{tp} qualifiedName"]
+                source_col = row[f"{sp} column"]
+                source_qual_name = row[f"{sp} qualifiedName"]
+                process_name = row[f"{pp} name"]
+                process_type = row[f"{pp} typeName"]
+                process_qual_name = row[f"{pp} qualifiedName"]
+            except KeyError:
+                raise Exception(
+                    "This row does not contain all of the required fields (" +
+                    ', '.join([f"{tp} column", f"{tp} qualifiedName", f"{sp} column", f"{sp} column", f"{pp} name", f"{tp} typeName", f"{pp} qualifiedName"]) + '): ' +
+                    json.dumps(row)
+                )
+
+            dataset_key = f"{source_qual_name}|{target_qual_name}"
+            column_mapping = {"Source": source_col, "Sink": target_col}
+            if process_qual_name in processes_seen:
+                # Updating the entity
+                working_process = processes_seen[process_qual_name]
+                if dataset_key in working_process["mappings"]:
+                    working_process["mappings"][dataset_key].append(
+                        column_mapping)
+                else:
+                    working_process["mappings"][dataset_key] = [column_mapping]
+            else:
+                # Creating a new one
+                processes_seen[process_qual_name] = {
+                    "mappings": {dataset_key: [column_mapping]},
+                    "processType": process_type,
+                    "processName": process_name
+                }
+
+        for proc_qn, proc in processes_seen.items():
+            columnMapping = []
+            for dataset in proc["mappings"]:
+                # Split apart the pipe delimited data
+                src_data, sink_data = dataset.split("|", 1)
+                # Create the column mapping data structure
+                columnMapping.append(
+                    {
+                        "DatasetMapping": {"Source": src_data, "Sink": sink_data},
+                        "ColumnMapping": proc["mappings"][dataset]
+                    }
+                )
+
+            proc_entity = AtlasProcess(
+                name=proc["processName"],
+                typeName=proc["processType"],
+                qualified_name=proc_qn,
+                guid=self.guidTracker.get_guid(),
+                inputs=None,
+                outputs=None,
+                attributes={"columnMapping": json.dumps(columnMapping)}
+            )
+            results.append(proc_entity.to_json())
+
         return results

@@ -17,9 +17,10 @@ def test_verify_template_sheets():
     ExcelReader.make_template(temp_path)
 
     # Expected
-    expected_sheets = set(["ColumnsLineage", "TablesLineage",
+    expected_sheets = set(["FineGrainColumnLineage", "TablesLineage",
                            "EntityDefs", "BulkEntities",
-                           "UpdateLineage", "ClassificationDefs"
+                           "UpdateLineage", "ClassificationDefs",
+                           "ColumnMapping"
                            ])
 
     wb = load_workbook(temp_path)
@@ -30,6 +31,76 @@ def test_verify_template_sheets():
         wb.close()
         os.remove(temp_path)
 
+def test_verify_custom_template_sheets():
+    # Setup
+    temp_path = "./temp_customizesheetnames.xlsx"
+    ExcelReader.make_template(temp_path,
+    bulkEntity_sheet="alpha",
+    updateLineage_sheet="beta",
+    columnMapping_sheet="gamma",
+    entityDef_sheet="delta",
+    classificationDef_sheet="epsilon",
+    table_sheet="zeta",
+    column_sheet="eta"
+    )
+
+    # Expected
+    expected_sheets = set(["alpha", "beta",
+                           "gamma", "delta",
+                           "epsilon", "zeta",
+                           "eta"
+                           ])
+
+    wb = load_workbook(temp_path)
+    difference = set(wb.sheetnames).symmetric_difference(expected_sheets)
+    try:
+        assert(len(difference) == 0)
+    finally:
+        wb.close()
+        os.remove(temp_path)
+
+def test_custom_template_header_prefix():
+    # Setup
+    temp_path = "./test_custom_template_header_prefix.xlsx"
+    ExcelReader.make_template(temp_path,
+    source_prefix="alpha",
+    target_prefix="beta",
+    process_prefix="gamma",
+    column_transformation_name="delta"
+    )
+    try:
+
+        # Expected
+        FineGrainColumnLineageHeaders = ["beta table", "beta column", "beta classifications",
+                "alpha table", "alpha column", "alpha classifications",
+                "delta"]
+        TablesLineageHeaders = ["beta table", "beta type", "beta classifications",
+                "alpha table", "alpha type", "alpha classifications",
+                "gamma name", "gamma type"]
+        UpdateLineageHeaders = ["beta typeName", "beta qualifiedName", "alpha typeName",
+                "alpha qualifiedName", "gamma name", "gamma qualifiedName",
+                "gamma typeName"]
+        ColumnMappingHeaders = ["alpha qualifiedName", "alpha column", "beta qualifiedName", 
+                "beta column", "gamma qualifiedName", "gamma typeName",
+                "gamma name"]
+        
+        wb = load_workbook(temp_path)
+
+        FineGrainColumnLineageSheet = wb["FineGrainColumnLineage"]
+        assert([str(c.value).strip() for c in FineGrainColumnLineageSheet[1]] == FineGrainColumnLineageHeaders)
+        
+        TablesLineageSheet = wb["TablesLineage"]
+        assert([str(c.value).strip() for c in TablesLineageSheet[1]] == TablesLineageHeaders)
+
+        UpdateLineageSheet = wb["UpdateLineage"]
+        assert([str(c.value).strip() for c in UpdateLineageSheet[1]] == UpdateLineageHeaders)
+
+        ColumnMappingSheet = wb["ColumnMapping"]
+        assert([str(c.value).strip() for c in ColumnMappingSheet[1]] == ColumnMappingHeaders)
+        
+    finally:
+        wb.close()
+        os.remove(temp_path)
 
 def setup_workbook_custom_sheet(filepath, sheet_name, headers, json_rows):
     wb = Workbook()
@@ -173,7 +244,7 @@ def test_excel_bulkEntities_withClassifications():
     temp_filepath = "./temp_test_excel_bulkEntitiesWithClassifications.xlsx"
     ec = ExcelConfiguration()
     reader = ExcelReader(ec)
-    max_cols = len(ExcelReader.TEMPLATE_HEADERS["BulkEntities"])
+    headers = ExcelReader.TEMPLATE_HEADERS["BulkEntities"] + ["[root] classifications"]
     # "typeName", "name",
     # "qualifiedName", "classifications"
     json_rows = [
@@ -184,8 +255,9 @@ def test_excel_bulkEntities_withClassifications():
          "qualifiedNameofEntityNameGHI", "PII;CLASS2"
          ]
     ]
-
-    setup_workbook(temp_filepath, "BulkEntities", max_cols, json_rows)
+    setup_workbook_custom_sheet(
+        temp_filepath, "BulkEntities", headers, json_rows)
+    
 
     results = reader.parse_bulk_entities(temp_filepath)
 
@@ -215,15 +287,15 @@ def test_excel_bulkEntities_dynamicAttributes():
     headers = ExcelReader.TEMPLATE_HEADERS["BulkEntities"] + \
         ["attrib1", "attrib2"]
     # "typeName", "name",
-    # "qualifiedName", "classifications"
+    # "qualifiedName",
     # "attrib1", "attrib2"
     json_rows = [
         ["demoType", "entityNameABC",
-         "qualifiedNameofEntityNameABC", None,
+         "qualifiedNameofEntityNameABC",
          None, "abc"
          ],
         ["demoType", "entityNameGHI",
-         "qualifiedNameofEntityNameGHI", None,
+         "qualifiedNameofEntityNameGHI",
          "ghi", "abc2"
          ]
     ]
@@ -260,19 +332,19 @@ def test_excel_bulkEntities_meanings_relationships():
     headers = ExcelReader.TEMPLATE_HEADERS["BulkEntities"] + \
         ["[Relationship] meanings"]
     # "typeName", "name",
-    # "qualifiedName", "classifications"
+    # "qualifiedName",
     # "[Relationship] meanings"
     json_rows = [
         ["demoType", "entityNameABC",
-         "qualifiedNameofEntityNameABC", None,
+         "qualifiedNameofEntityNameABC",
          None
          ],
         ["demoType", "entityNameGHI",
-         "qualifiedNameofEntityNameGHI", None,
+         "qualifiedNameofEntityNameGHI",
          "termA"
          ],
          ["demoType", "entityNameXYZ",
-         "qualifiedNameofEntityNameXYZ", None,
+         "qualifiedNameofEntityNameXYZ",
          "term1;term2"
          ]
     ]
@@ -322,21 +394,21 @@ def test_excel_table_lineage():
 
     try:
         assert(results[0].to_json(minimum=True) == {
-            "typeName": "demo_type", "guid": -1001, "qualifiedName": "table1"})
+            "typeName": "demo_type", "guid": "-1001", "qualifiedName": "table1"})
         assert(results[1].to_json(minimum=True) == {
-            "typeName": "demo_type2", "guid": -1002, "qualifiedName": "table0"})
+            "typeName": "demo_type2", "guid": "-1002", "qualifiedName": "table0"})
         assert(results[2].to_json(minimum=True) == {
-            "typeName": "proc_type", "guid": -1003, "qualifiedName": "proc01"})
+            "typeName": "proc_type", "guid": "-1003", "qualifiedName": "proc01"})
     finally:
         remove_workbook(temp_filepath)
 
 
-def test_excel_column_lineage():
+def test_excel_finegrain_column_lineage():
     temp_filepath = "./temp_test_excel_column_lineage.xlsx"
     ec = ExcelConfiguration()
     reader = ExcelReader(ec)
     max_cols_tl = len(ExcelReader.TEMPLATE_HEADERS["TablesLineage"])
-    max_cols_cl = len(ExcelReader.TEMPLATE_HEADERS["ColumnsLineage"])
+    max_cols_cl = len(ExcelReader.TEMPLATE_HEADERS["FineGrainColumnLineage"])
 
     # "Target Table", "Target Type", "Target Classifications",
     # "Source Table", "Source Type", "Source Classifications",
@@ -365,7 +437,7 @@ def test_excel_column_lineage():
     ]
 
     setup_workbook(temp_filepath, "TablesLineage", max_cols_tl, json_rows)
-    setup_workbook(temp_filepath, "ColumnsLineage", max_cols_cl, json_rows_col)
+    setup_workbook(temp_filepath, "FineGrainColumnLineage", max_cols_cl, json_rows_col)
 
     atlas_types = column_lineage_scaffold("demo")
 
@@ -374,11 +446,12 @@ def test_excel_column_lineage():
     # For column mappings, table_entities do not contain columnMapping
     assert(all(["columnMapping" not in e.attributes for e in table_entities]))
 
-    column_entities = reader.parse_column_lineage(temp_filepath,
-                                                  table_entities,
-                                                  atlas_types,
-                                                  use_column_mapping=True
-                                                  )
+    column_entities = reader.parse_finegrain_column_lineage(
+        temp_filepath,
+        table_entities,
+        atlas_types,
+        use_column_mapping=True
+        )
 
     try:
         table1 = None
@@ -470,5 +543,33 @@ def test_excel_classification_defs():
         assert(len(results) == 1)
         assert("classificationDefs" in results)
         assert(len(results["classificationDefs"]) == 1)
+    finally:
+        remove_workbook(temp_filepath)
+
+def test_excel_column_mapping():
+    temp_filepath = "./temp_test_excel_columnMapping.xlsx"
+    ec = ExcelConfiguration()
+    reader = ExcelReader(ec)
+
+    headers = ExcelReader.TEMPLATE_HEADERS["ColumnMapping"]
+
+    # Same as main test
+    json_rows = [
+        ["abc://123", "A1", "def://456", "B1", "proc://abc", "customProcWithMapping","my proc name"],
+        ["abc://123", "A2", "def://456", "B2", "proc://abc", "customProcWithMapping","my proc name"],
+        ["pqr://777", "A1", "def://999", "B3", "proc://abc", "customProcWithMapping","my proc name"]
+    ]
+
+    setup_workbook_custom_sheet(
+        temp_filepath, "ColumnMapping", headers, json_rows)
+
+    results = reader.parse_column_mapping(temp_filepath)
+
+    try:
+        assert(len(results) == 1)
+        proc = results[0]
+        colmap = json.loads(proc["attributes"]["columnMapping"])
+        assert(len(colmap) == 2)
+        
     finally:
         remove_workbook(temp_filepath)

@@ -1,3 +1,5 @@
+from ..core.entity import AtlasUnInit
+
 
 def string_to_classification(string, sep=";"):
     """
@@ -9,7 +11,7 @@ def string_to_classification(string, sep=";"):
     :rtype: list(dict)
     """
     if string is None:
-        return []
+        return AtlasUnInit()
     # TODO: How do we bring in attributes if they're required?
     # Defaulting to NOT propagate the classification downstream.
     # Advanced users may decide to parse the classifications and update the
@@ -144,13 +146,13 @@ def first_process_containing_io(input_name, output_name, atlas_entities):
                              ((input_name is None) and (num_inputs == 0)) or
                              ((input_name is not None) and (num_inputs > 0) and
                               (any([e["qualifiedName"] ==
-                                    input_name for e in entity.inputs ]))
+                                    input_name for e in entity.inputs]))
                               )
                              )
             output_matches = (
                 ((output_name is None) and (num_outputs == 0)) or
                 ((output_name is not None) and (num_outputs > 0) and
-                    (any([e["qualifiedName"] == output_name for e in entity.outputs ]))
+                    (any([e["qualifiedName"] == output_name for e in entity.outputs]))
                  )
             )
         if input_matches and output_matches:

@@ -1,7 +1,6 @@
 import json
 import os
 
-import openpyxl
 from openpyxl import Workbook
 from openpyxl import load_workbook
 
@@ -70,9 +69,9 @@ if __name__ == "__main__":
     # we get to parsing the spreadsheet so we have something to work with.
     # This is not necessary if you are working with existing entities.
     inputTable = AtlasEntity(name="demo_hive_source", typeName="hive_table",
-                             qualified_name="pyapacheatlas://demo_update_lineage_input", guid=-100)
+                             qualified_name="pyapacheatlas://demo_update_lineage_input", guid="-100")
     outputTable = AtlasEntity(name="demo_hive_target", typeName="hive_table",
-                              qualified_name="pyapacheatlas://demo_update_lineage_output", guid=-101)
+                              qualified_name="pyapacheatlas://demo_update_lineage_output", guid="-101")
     # Upload these entities so we have something to work with
     # This will throw and exception if something goes wrong, otherwise
     # throw out the resulting json.

@@ -1,3 +1,4 @@
+import json
 import warnings
 
 import pytest
@@ -13,16 +14,16 @@ def test_parse_bulk_entities():
     # "qualifiedName", "classifications"
     json_rows = [
         {"typeName": "demoType", "name": "entityNameABC",
-         "qualifiedName": "qualifiedNameofEntityNameABC", "classifications": None
+         "qualifiedName": "qualifiedNameofEntityNameABC", "[root] classifications": None
          },
         {"typeName": "demoType", "name": "entityNameGHI",
-         "qualifiedName": "qualifiedNameofEntityNameGHI", "classifications": "PII;CLASS2"
+         "qualifiedName": "qualifiedNameofEntityNameGHI", "[root] classifications": "PII;CLASS2"
          },
         {"typeName": "demoType", "name": "entityNameJKL",
-         "qualifiedName": "qualifiedNameofEntityNameJKL", "classifications": "PII"
+         "qualifiedName": "qualifiedNameofEntityNameJKL", "[root] classifications": "PII"
          },
         {"typeName": "demoType", "name": "entityNameDynamic",
-         "qualifiedName": "qualifiedNameofEntityNameDynamic", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameDynamic", "[root] classifications": None,
          "dynamicAttrib1": "foo", "dynamicAttrib2": "bar"
          }
     ]
@@ -62,15 +63,15 @@ def test_parse_bulk_entities_with_relationships():
     # "[Relationship] table"
     json_rows = [
         {"typeName": "demo_table", "name": "entityNameABC",
-         "qualifiedName": "qualifiedNameofEntityNameABC", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameABC",
          "[Relationship] table": None
          },
         {"typeName": "demo_column", "name": "col1",
-         "qualifiedName": "col1qn", "classifications": None,
+         "qualifiedName": "col1qn",
          "[Relationship] table": "qualifiedNameofEntityNameABC"
          },
          {"typeName": "demo_column", "name": "col2",
-         "qualifiedName": "col2qn", "classifications": None,
+         "qualifiedName": "col2qn",
          "[Relationship] table": None
          }
     ]
@@ -86,6 +87,41 @@ def test_parse_bulk_entities_with_relationships():
 
     assert("table" not in col2["relationshipAttributes"])
 
+def test_parse_bulk_entities_with_relationships_and_atlas_object_id():
+    rc = ReaderConfiguration()
+    reader = Reader(rc)
+
+    json_rows = [
+        {"typeName": "demo_table", "name": "entityNameABC",
+         "qualifiedName": "qualifiedNameofEntityNameABC",
+         "[Relationship] table": None,
+         "[Relationship] columns": "AtlasObjectId(guid:abc-123-def);AtlasObjectId(typeName:DataSet qualifiedName:qnInList)"
+         },
+        {"typeName": "demo_column", "name": "col1",
+         "qualifiedName": "col1qn",
+         "[Relationship] table": "AtlasObjectId(typeName:DataSet qualifiedName:myqualifiedName)",
+         "[Relationship] columns": None
+         },
+         {"typeName": "demo_column", "name": "col2",
+         "qualifiedName": "col2qn",
+         "[Relationship] table": "AtlasObjectId(guid:ghi-456-jkl)",
+         "[Relationship] columns": None
+         }
+    ]
+    results = reader.parse_bulk_entities(json_rows)
+    table = results["entities"][0]
+    col1 = results["entities"][1]
+    col2 = results["entities"][2]
+
+    assert(len(table["relationshipAttributes"]["columns"]) == 2)
+    assert(table["relationshipAttributes"]["columns"][0] == {"guid":"abc-123-def"})
+    assert(table["relationshipAttributes"]["columns"][1] == {"typeName":"DataSet", "uniqueAttributes": {"qualifiedName":"qnInList"}})
+
+    col1_table = col1["relationshipAttributes"]["table"]
+    assert(col1_table["typeName"] == "DataSet" )
+    assert(col1_table["uniqueAttributes"] == {"qualifiedName": "myqualifiedName"} )
+
+    assert(col2["relationshipAttributes"]["table"] == {"guid":"ghi-456-jkl"})
 
 def test_parse_bulk_entities_with_terms():
     rc = ReaderConfiguration()
@@ -95,26 +131,56 @@ def test_parse_bulk_entities_with_terms():
     # "[Relationship] table"
     json_rows = [
         {"typeName": "demo_table", "name": "entityNameABC",
-         "qualifiedName": "qualifiedNameofEntityNameABC", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameABC",
          "[Relationship] meanings": "My Term;abc"
          },
          {"typeName": "demo_table", "name": "entityNameDEF",
-         "qualifiedName": "qualifiedNameofEntityNameDEF", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameDEF",
          "[Relationship] meanings": None
          }
     ]
     results = reader.parse_bulk_entities(json_rows)
     ae1 = results["entities"][0]
     ae2 = results["entities"][1]
-    
+
     assert("meanings" in ae1["relationshipAttributes"])
     assert("meanings" not in ae2["relationshipAttributes"])
     ae1_meanings = ae1["relationshipAttributes"]["meanings"]
-    
+
     assert(len(ae1_meanings) == 2)
     ae1_meanings_qns = set([e["uniqueAttributes"]["qualifiedName"] for e in ae1_meanings ])
     assert(set(["My Term@Glossary", "abc@Glossary"]) == ae1_meanings_qns)
 
+def test_parse_bulk_entities_with_root_labels():
+    rc = ReaderConfiguration()
+    reader = Reader(rc)
+    # "typeName", "name",
+    # "qualifiedName", "classifications",
+    # "[Relationship] table"
+    json_rows = [
+        {"typeName": "demo_table", "name": "entityNameABC",
+         "qualifiedName": "qualifiedNameofEntityNameABC", "[root] classifications": None,
+         "[root] labels": "labelA"
+         },
+         {"typeName": "demo_table", "name": "entityNameDEF",
+         "qualifiedName": "qualifiedNameofEntityNameDEF", "[root] classifications": None,
+         "[root] labels": "labelA;labelB", "[root] status": "ACTIVE"
+         }
+    ]
+    results = reader.parse_bulk_entities(json_rows)
+    ae1 = results["entities"][0]
+    ae2 = results["entities"][1]
+    
+    assert("labels" in ae1 and "labels" in ae2)
+    assert(ae1["labels"] == ["labelA"])
+    assert(ae2["labels"] == ["labelA", "labelB"])
+    
+    assert(("status" not in ae1) and "status" in ae2)
+    assert(ae2["status"] == "ACTIVE")
+
+# TODO: classifications
+# TODO: busines attributes
+# TODO: custom attributes
 
 def test_parse_entity_defs():
     rc = ReaderConfiguration()
@@ -214,15 +280,15 @@ def test_bulk_entity_with_experts_owners():
 
     json_rows = [
         {"typeName": "demoType", "name": "entityNameABC",
-         "qualifiedName": "qualifiedNameofEntityNameABC", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameABC",
          "experts": "a;b;", "owners":""
          },
         {"typeName": "demoType", "name": "entityNameGHI",
-         "qualifiedName": "qualifiedNameofEntityNameGHI", "classifications": None,
+         "qualifiedName": "qualifiedNameofEntityNameGHI",
          "experts": "a;b;", "owners":"c;d"
          },
         {"typeName": "demoType", "name": "entityNameJKL",
-         "qualifiedName": "qualifiedNameofEntityNameJKL", "classifications": None
+         "qualifiedName": "qualifiedNameofEntityNameJKL",
          }
     ]
 
@@ -234,9 +300,41 @@ def test_bulk_entity_with_experts_owners():
     no_contacts = results["entities"][2]
 
     assert(len(exp_only["Owner"]) == 0)
-    assert(len(exp_only["Expert"]) == 2)
-    assert(len(both["Owner"]) == 2)
-    assert(len(both["Expert"]) == 2)
+    assert(exp_only["Expert"] == [{"id":"a"}, {"id": "b"}])
+    assert(both["Owner"] == [{"id":"c"}, {"id": "d"}])
+    assert(both["Expert"] == [{"id":"a"}, {"id": "b"}])
+    assert("contacts" not in no_contacts)
+
+def test_bulk_entity_with_experts_owners_func():
+    rc =ReaderConfiguration()
+    reader = Reader(rc)
+
+    json_rows = [
+        {"typeName": "demoType", "name": "entityNameABC",
+         "qualifiedName": "qualifiedNameofEntityNameABC",
+         "experts": "a;b;", "owners":""
+         },
+        {"typeName": "demoType", "name": "entityNameGHI",
+         "qualifiedName": "qualifiedNameofEntityNameGHI",
+         "experts": "a;b;", "owners":"c;d"
+         },
+        {"typeName": "demoType", "name": "entityNameJKL",
+         "qualifiedName": "qualifiedNameofEntityNameJKL",
+         }
+    ]
+
+    dummy_func = (lambda x: x+"_abc")
+
+    results = reader.parse_bulk_entities(json_rows, contacts_func=dummy_func)
+
+    exp_only = results["entities"][0]["contacts"]
+    both = results["entities"][1]["contacts"]
+    no_contacts = results["entities"][2]
+
+    assert(len(exp_only["Owner"]) == 0)
+    assert(exp_only["Expert"] == [{"id":"a_abc"}, {"id": "b_abc"}])
+    assert(both["Owner"] == [{"id":"c_abc"}, {"id": "d_abc"}])
+    assert(both["Expert"] == [{"id":"a_abc"}, {"id": "b_abc"}])
     assert("contacts" not in no_contacts)
     
 def test_parse_classification_defs():
@@ -262,3 +360,79 @@ def test_parse_classification_defs():
     assert(len(results[1]["entityTypes"]) == 0)
     assert(len(results[2]["entityTypes"]) == 2)
     assert(len(results[3]["entityTypes"]) == 1)
+
+def test_parse_classification_defs_with_super_sub_types():
+    rc =ReaderConfiguration()
+    reader = Reader(rc)
+
+    json_rows = [
+        {"classificationName": "test", "entityTypes": "DataSet", "superTypes": "a;b", "subTypes":"c;d"},
+    ]
+
+    parsed = reader.parse_classification_defs(json_rows)
+
+    results = parsed["classificationDefs"]
+
+    assert(results[0]["superTypes"] == ["a","b"])
+    assert(results[0]["subTypes"] == ["c","d"])
+
+def test_parse_column_mapping():
+    rc = ReaderConfiguration()
+    reader = Reader(rc)
+
+    json_rows = [
+        {"Source qualifiedName": "abc://123", "Source column":"A1", "Target qualifiedName": "def://456", "Target column": "B1", "Process qualifiedName": "proc://abc", "Process typeName": "customProcWithMapping", "Process name":"my proc name"},
+        {"Source qualifiedName": "abc://123", "Source column":"A2", "Target qualifiedName": "def://456", "Target column": "B2", "Process qualifiedName": "proc://abc", "Process typeName": "customProcWithMapping", "Process name":"my proc name"},
+        {"Source qualifiedName": "pqr://777", "Source column":"C1", "Target qualifiedName": "def://999", "Target column": "B3", "Process qualifiedName": "proc://abc", "Process typeName": "customProcWithMapping", "Process name":"my proc name"}
+    ]
+
+    parsed = reader.parse_column_mapping(json_rows)
+
+    results = parsed
+
+    assert(len(results) == 1)
+    assert(results[0]["attributes"]["name"] == "my proc name")
+    assert(results[0]["attributes"]["qualifiedName"] == "proc://abc")
+    columnMapping = json.loads(results[0]["attributes"]["columnMapping"])
+    assert(len(columnMapping) == 2)
+    firstMap = columnMapping[0]
+    firstMap_col_map = firstMap["ColumnMapping"]
+    firstMap_data_map = firstMap["DatasetMapping"]
+    firstMap_col_map_exp = [{"Source": "A1", "Sink": "B1"},{"Source": "A2", "Sink": "B2"}]
+    firstMap_data_map_exp = {"Source": "abc://123", "Sink": "def://456"}
+    assert(len(firstMap_col_map) == len(firstMap_col_map_exp))
+    assert(len([i for i in firstMap_col_map if i in firstMap_col_map_exp]))
+    assert(firstMap_data_map == firstMap_data_map_exp)
+    
+    secondMap = columnMapping[1]
+    secondMap_col_map = secondMap["ColumnMapping"]
+    secondMap_data_map = secondMap["DatasetMapping"]
+    secondMap_col_map_exp = [{"Source": "C1", "Sink": "B3"}]
+    secondMap_data_map_exp = {"Source": "pqr://777", "Sink": "def://999"}
+    assert(secondMap_col_map == secondMap_col_map_exp)
+    assert(secondMap_data_map == secondMap_data_map_exp)
+
+def test_parse_bulk_entities_with_custom_attributes():
+    rc = ReaderConfiguration()
+    reader = Reader(rc)
+    # "typeName", "name",
+    # "qualifiedName",
+    # "[custom] foo", "bar"
+    json_rows = [
+        {"typeName": "demo_table", "name": "entityNameABC",
+         "qualifiedName": "qualifiedNameofEntityNameABC",
+         "[custom] foo": "bar"
+         },
+         {"typeName": "demo_table", "name": "entityNameDEF",
+         "qualifiedName": "qualifiedNameofEntityNameDEF",
+         "[custom] foo": None
+         }
+    ]
+    results = reader.parse_bulk_entities(json_rows)
+    ae1 = results["entities"][0]
+    ae2 = results["entities"][1]
+
+    assert("foo" in ae1["customAttributes"])
+    assert(ae1["customAttributes"]["foo"] == "bar")
+
+    assert("customAttributes" not in ae2)
